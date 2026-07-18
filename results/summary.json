@@ -1,0 +1,6 @@
+{
+  "n_trials": 3,
+  "n_configs": 1,
+  "trials_csv": "results/trials.csv",
+  "model_results_csv": "results/model_results.csv"
+}
