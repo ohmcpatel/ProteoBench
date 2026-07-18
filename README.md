@@ -1,0 +1,3 @@
+# ProteoBench
+
+Proteomics benchmarking workspace.
