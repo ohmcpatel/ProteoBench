@@ -14,11 +14,12 @@ venv/
 .coverage
 htmlcov/
 
-# Local eval caches / workspaces (latch-eval-tools)
+# Local eval caches / workspaces (proteobench CLI / latch-eval-tools)
 .proteobench/
 .proteobench_workspace/
 .eval_cache/
 .eval_workspace/
+.cache/
 
 # Secrets / env
 .env
@@ -31,5 +32,14 @@ htmlcov/
 .vscode/
 *.swp
 
-# Generated run workspaces (keep trajectory results intentional)
-.cache/
+# mining/ — runtime only (source under mining/ is tracked)
+mining/paper_mine/.venv/
+mining/paper_mine/.env
+mining/paper_mine/out/
+mining/paper_mine/queue/
+mining/paper_mine/releases/
+mining/paper_mine/_scratch/
+mining/review_app/frontend/node_modules/
+mining/review_app/frontend/dist/
+mining/review_app/backend/data/feedback.jsonl
+mining/review_app/backend/data/candidates.jsonl

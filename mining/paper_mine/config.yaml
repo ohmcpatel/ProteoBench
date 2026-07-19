@@ -1,0 +1,36 @@
+# ProteoBench paper-mine pilot config (laptop-friendly defaults)
+
+cube_csv: ../data/cube_inventory_270_cells.csv
+
+# Pilot scope: Data integrity (B01) + Identification (B02)
+batches:
+  - B01
+  - B02
+
+only_final_selection: true  # final_selection_target_v0 > 0
+
+# Stage 1 — literature fetch
+papers_per_query: 20
+max_papers_raw_per_cell: 40
+max_queries_per_cell: 4
+sleep_between_requests_seconds: 0.4
+request_timeout_seconds: 60
+max_fulltext_chars: 20000
+
+# Stage 2 — rank
+top_k_for_claude: 5
+
+# Stage 3 — Claude extraction
+claude_model: claude-sonnet-4-5
+claude_max_tokens: 4096
+claude_temperature: 0.1
+claude_repair_retries: 1
+
+# Paths (relative to paper_mine/)
+paths:
+  queue_dir: queue
+  papers_dir: out/papers
+  ranked_dir: out/ranked
+  candidates_dir: out/candidates
+  dataset_dir: out/dataset
+  costs_dir: out/costs
