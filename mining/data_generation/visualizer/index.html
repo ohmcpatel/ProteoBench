@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Interactive 3D atlas of ProtBench candidate evaluations and feasibility scores.">
+  <title>ProtBench Evaluation Observatory</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div><p class="eyebrow">PROTBENCH CORE · CANDIDATE ATLAS</p><h1>Evaluation Observatory</h1></div>
+      <p class="status"><i></i><span id="record-count">Loading concepts…</span></p>
+    </header>
+
+    <section class="controls" aria-label="Atlas filters">
+      <label>Search<input id="search" type="search" placeholder="Cell, title, or task"></label>
+      <label>Depth<select id="depth"><option value="all">All depths</option></select></label>
+      <label>Category<select id="category"><option value="all">All categories</option></select></label>
+      <label>Evidence<select id="evidence"><option value="all">All evidence</option></select></label>
+      <label>Minimum feasibility <b id="score-value">1</b><input id="min-score" type="range" min="1" max="5" value="1"></label>
+    </section>
+
+    <section class="workspace">
+      <section class="observatory">
+        <div class="toolbar">
+          <div class="legend">
+            <span><i class="atomic"></i>Atomic</span><span><i class="composite"></i>Composite</span><span><i class="decision"></i>Decision</span>
+            <span><i class="size"></i>size = feasibility</span>
+          </div>
+          <button id="reset-view" type="button">Reset view</button>
+        </div>
+        <div class="stage" id="stage">
+          <canvas id="atlas" role="img" aria-label="Rotatable three-dimensional matrix of ProtBench concepts. Point color encodes task depth and point size encodes feasibility from one to five."></canvas>
+          <aside id="hover-card" class="hover-card" hidden></aside>
+          <span class="axis depth-axis">TASK DEPTH →</span>
+          <span class="axis category-axis">ANALYTICAL CATEGORY →</span>
+          <span class="axis evidence-axis">EVIDENCE FAMILY →</span>
+        </div>
+        <div class="footer"><span>Drag to rotate · scroll to zoom · click a point to inspect</span><strong id="visible-count"></strong></div>
+      </section>
+
+      <aside class="details" id="details" aria-live="polite">
+        <p>Loading the enriched atlas…</p>
+      </aside>
+    </section>
+    <footer><span>Score = weighted 5-part rubric with explicit hard caps</span><span>4–5 generate · 3 review · 1–2 park</span></footer>
+  </main>
+  <script src="app.js" defer></script>
+</body>
+</html>
