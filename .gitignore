@@ -38,6 +38,7 @@ mining/paper_mine/.env
 mining/paper_mine/out/
 mining/paper_mine/queue/
 mining/paper_mine/releases/
+mining/paper_mine/cubes/
 mining/paper_mine/_scratch/
 mining/review_app/frontend/node_modules/
 mining/review_app/frontend/dist/

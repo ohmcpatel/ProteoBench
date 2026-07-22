@@ -49,6 +49,8 @@ Regenerable junk (`*.egg-info`, `.pytest_cache`, `.proteobench_workspace`) is gi
 | `mining/paper_mine/out/` | Working run (gitignored) |
 | `mining/paper_mine/releases/` | Frozen v0001, v0002, … (gitignored) |
 | `mining/review_app/` | FastAPI + React keep/revise/reject |
+| `mining/observability/` | Yield funnel dashboard (drop-off + reasons) |
+| `mining/paper_mine/compute_yield.py` | Funnel snapshot → `out/observability/` |
 
 **Entry:** [mining/README.md](../mining/README.md) → [paper_mine/README.md](../mining/paper_mine/README.md).
 

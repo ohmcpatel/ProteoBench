@@ -34,3 +34,4 @@ paths:
   candidates_dir: out/candidates
   dataset_dir: out/dataset
   costs_dir: out/costs
+  observability_dir: out/observability

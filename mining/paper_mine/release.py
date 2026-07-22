@@ -1,38 +1,55 @@
 #!/usr/bin/env python3
-"""Versioned snapshots of paper-mine outputs (local + free cloud).
+"""Versioned snapshots of paper-mine outputs + data cube (local + free cloud).
 
 Default remote backend is **Hugging Face Hub** (free for public dataset repos).
-**GitHub Releases** is also supported (free, uses `gh` + your existing GitHub auth).
+**GitHub Releases** is also supported for mining freezes (uses `gh`).
 
 Workflow
 --------
-1. Run stages 0–4 (produce out/dataset/...).
-2. Snapshot:
+1. Freeze the data cube taxonomy (optional but recommended before mining):
+
+       python release.py cube snapshot --notes "initial 270-cell inventory"
+       python release.py cube push
+
+2. Run stages 0–4 (produce out/dataset/...).
+3. Snapshot mining candidates:
 
        python release.py snapshot --notes "baseline pilot"
 
-3. Push to cloud (does not go in git):
+4. Push to cloud (does not go in git):
 
-       # Hugging Face (recommended long-term)
        export HF_TOKEN=hf_...   # or: huggingface-cli login
        export PAPER_MINE_HF_REPO=YOUR_USER/proteobench-mining-releases
        python release.py push
 
-       # Or GitHub Releases (works with `gh auth login`)
+       # Or GitHub Releases (mining only; works with `gh auth login`)
        python release.py push --backend github
 
-4. Pull when needed:
+5. Pull when needed:
 
        python release.py pull v0001
+       python release.py cube pull v0001
        python release.py list --remote
+       python release.py cube list --remote
 
-Releases include dataset/, metrics, ranked shortlists, feedback snapshot, config.
-Raw out/papers are excluded unless --include-papers (keeps uploads small/free).
+HF layout
+---------
+  releases/vNNNN/   mining candidate freezes
+  cubes/vNNNN/      data-cube inventory freezes
+  index.json        mining release index
+  cubes/index.json  cube release index
+  README.md         dataset card
+
+Mining freezes include dataset/, metrics, ranked shortlists, feedback, config,
+and a pin to the cube CSV (sha256 + matching cube freeze version when available).
+Raw out/papers are excluded unless --include-papers.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
 import json
 import os
 import re
@@ -41,6 +58,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -55,8 +73,10 @@ except ImportError:
     pass
 
 RELEASES_DIR = ROOT / "releases"
+CUBES_DIR = ROOT / "cubes"
 DEFAULT_HF_ENV = "PAPER_MINE_HF_REPO"
 DEFAULT_BACKEND_ENV = "PAPER_MINE_RELEASE_BACKEND"  # huggingface | github
+VERSION_RE = re.compile(r"v\d{4}")
 
 
 def _utc_now() -> str:
@@ -65,6 +85,25 @@ def _utc_now() -> str:
 
 def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, check=check)
+
+
+def file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _valid_version(version: str) -> bool:
+    return bool(VERSION_RE.fullmatch(version))
+
+
+def _next_version(existing: list[str]) -> str:
+    if not existing:
+        return "v0001"
+    n = int(existing[-1][1:]) + 1
+    return f"v{n:04d}"
 
 
 def repo_root() -> Path:
@@ -108,17 +147,28 @@ def list_local_versions() -> list[str]:
     vers = [
         p.name
         for p in RELEASES_DIR.iterdir()
-        if p.is_dir() and re.fullmatch(r"v\d{4}", p.name)
+        if p.is_dir() and _valid_version(p.name)
     ]
     return sorted(vers)
 
 
 def next_version() -> str:
-    existing = list_local_versions()
-    if not existing:
-        return "v0001"
-    n = int(existing[-1][1:]) + 1
-    return f"v{n:04d}"
+    return _next_version(list_local_versions())
+
+
+def list_local_cube_versions() -> list[str]:
+    if not CUBES_DIR.exists():
+        return []
+    vers = [
+        p.name
+        for p in CUBES_DIR.iterdir()
+        if p.is_dir() and _valid_version(p.name)
+    ]
+    return sorted(vers)
+
+
+def next_cube_version() -> str:
+    return _next_version(list_local_cube_versions())
 
 
 def compute_metrics(candidates: list[dict[str, Any]], feedback: list[dict[str, Any]]) -> dict[str, Any]:
@@ -184,6 +234,18 @@ def save_index(index: dict[str, Any]) -> None:
     write_json(RELEASES_DIR / "index.json", index)
 
 
+def load_cube_index() -> dict[str, Any]:
+    path = CUBES_DIR / "index.json"
+    if not path.exists():
+        return {"schema": "paper_mine.cube_index.v1", "cubes": []}
+    return read_json(path)
+
+
+def save_cube_index(index: dict[str, Any]) -> None:
+    CUBES_DIR.mkdir(parents=True, exist_ok=True)
+    write_json(CUBES_DIR / "index.json", index)
+
+
 def resolve_backend(cli: str | None) -> str:
     b = (cli or os.environ.get(DEFAULT_BACKEND_ENV) or "huggingface").strip().lower()
     if b in {"hf", "huggingface", "hub"}:
@@ -195,6 +257,101 @@ def resolve_backend(cli: str | None) -> str:
 
 def resolve_hf_repo(cli: str | None) -> str | None:
     return cli or os.environ.get(DEFAULT_HF_ENV) or None
+
+
+def default_hf_repo() -> str | None:
+    repo = resolve_hf_repo(None)
+    if repo:
+        return repo
+    slug = github_slug()
+    if slug:
+        owner = slug.split("/")[0]
+        return f"{owner}/proteobench-mining-releases"
+    return None
+
+
+def resolve_cube_csv(config: Path | None = None, cube_csv: Path | None = None) -> Path:
+    if cube_csv is not None:
+        return Path(cube_csv).resolve()
+    cfg = load_config(config)
+    return Path(cfg["cube_csv"]).resolve()
+
+
+def compute_cube_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    n = len(rows)
+    schema_versions = sorted({str(r.get("schema_version") or "") for r in rows if r.get("schema_version") is not None})
+    batch_counts = dict(Counter(str(r.get("batch_id") or "unknown") for r in rows))
+    task_depth_counts = dict(Counter(str(r.get("task_depth") or "unknown") for r in rows))
+    review_status_counts = dict(Counter(str(r.get("review_status") or "unknown") for r in rows))
+    category_counts = dict(
+        Counter(str(r.get("analytical_category_code") or "unknown") for r in rows)
+    )
+    evidence_counts = dict(
+        Counter(str(r.get("evidence_family_code") or "unknown") for r in rows)
+    )
+
+    n_priority = 0
+    for r in rows:
+        raw = r.get("final_selection_target_v0")
+        try:
+            if float(raw or 0) > 0:
+                n_priority += 1
+        except (TypeError, ValueError):
+            pass
+
+    return {
+        "n_cells": n,
+        "schema_versions": schema_versions,
+        "n_batches": len(batch_counts),
+        "batch_counts": batch_counts,
+        "task_depth_counts": task_depth_counts,
+        "review_status_counts": review_status_counts,
+        "analytical_category_counts": category_counts,
+        "evidence_family_counts": evidence_counts,
+        "n_priority_cells": n_priority,
+        "pct_priority_cells": round(100.0 * n_priority / n, 2) if n else 0.0,
+    }
+
+
+def read_cube_rows(path: Path) -> list[dict[str, Any]]:
+    with open(path, encoding="utf-8", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def find_cube_version_by_sha(sha256: str) -> str | None:
+    """Return local cube freeze version whose inventory matches sha256, if any."""
+    index = load_cube_index()
+    for entry in index.get("cubes") or []:
+        if entry.get("sha256") == sha256:
+            return entry.get("version")
+    # Fall back to scanning freeze manifests (handles missing index entries)
+    for version in reversed(list_local_cube_versions()):
+        man_path = CUBES_DIR / version / "manifest.json"
+        if not man_path.exists():
+            continue
+        man = read_json(man_path)
+        if man.get("sha256") == sha256:
+            return version
+        inv = CUBES_DIR / version / "cube_inventory.csv"
+        if inv.exists() and file_sha256(inv) == sha256:
+            return version
+    return None
+
+
+def cube_pin_for_source(cube_path: Path) -> dict[str, Any]:
+    """Describe the live cube CSV for embedding into a mining release manifest."""
+    sha = file_sha256(cube_path)
+    rows = read_cube_rows(cube_path)
+    schema_versions = sorted(
+        {str(r.get("schema_version") or "") for r in rows if r.get("schema_version") is not None}
+    )
+    return {
+        "source_csv": str(cube_path),
+        "sha256": sha,
+        "n_cells": len(rows),
+        "schema_versions": schema_versions,
+        "cube_version": find_cube_version_by_sha(sha),
+    }
 
 
 # ── snapshot ───────────────────────────────────────────────────────────────
@@ -212,7 +369,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
         return 1
 
     version = args.version or next_version()
-    if not re.fullmatch(r"v\d{4}", version):
+    if not _valid_version(version):
         print("ERROR: version must look like v0001", file=sys.stderr)
         return 1
 
@@ -252,12 +409,28 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
 
     candidates = read_jsonl(candidates_path)
     metrics = compute_metrics(candidates, feedback)
+
+    cube_path = Path(cfg["cube_csv"])
+    cube_meta: dict[str, Any] | None = None
+    if cube_path.exists():
+        cube_meta = cube_pin_for_source(cube_path)
+        if not cube_meta.get("cube_version"):
+            print(
+                "NOTE: cube CSV is not pinned to a local cube freeze. "
+                "Run `python release.py cube snapshot` so mining releases "
+                "can record cubes/vNNNN.",
+                file=sys.stderr,
+            )
+    else:
+        print(f"WARNING: cube CSV missing at {cube_path}", file=sys.stderr)
+
     meta = {
         "schema": "paper_mine.release.v1",
         "version": version,
         "created_at": _utc_now(),
         "notes": args.notes or "",
         "git": git_meta(),
+        "cube": cube_meta,
         "paths_snapshotted": {
             "dataset": True,
             "ranked": (dest / "ranked").exists(),
@@ -282,6 +455,8 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
             "created_at": meta["created_at"],
             "notes": meta["notes"],
             "git_commit": (meta.get("git") or {}).get("commit"),
+            "cube_version": (cube_meta or {}).get("cube_version"),
+            "cube_sha256": (cube_meta or {}).get("sha256"),
             "metrics": metrics,
             "local_path": str(dest.relative_to(ROOT)),
         }
@@ -303,6 +478,178 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
                 private=args.private,
             )
         )
+    return 0
+
+
+# ── cube freezes ────────────────────────────────────────────────────────────
+
+
+def cmd_cube_snapshot(args: argparse.Namespace) -> int:
+    try:
+        cube_src = resolve_cube_csv(
+            Path(args.config) if args.config else None,
+            Path(args.cube_csv) if args.cube_csv else None,
+        )
+    except Exception as e:
+        print(f"ERROR: could not resolve cube CSV: {e}", file=sys.stderr)
+        return 1
+
+    if not cube_src.exists():
+        print(f"ERROR: cube CSV not found: {cube_src}", file=sys.stderr)
+        return 1
+
+    version = args.version or next_cube_version()
+    if not _valid_version(version):
+        print("ERROR: version must look like v0001", file=sys.stderr)
+        return 1
+
+    dest = CUBES_DIR / version
+    if dest.exists() and not args.force:
+        print(f"ERROR: {dest} exists. Use --force to overwrite.", file=sys.stderr)
+        return 1
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+
+    inventory_name = "cube_inventory.csv"
+    dest_csv = dest / inventory_name
+    shutil.copy2(cube_src, dest_csv)
+
+    rows = read_cube_rows(dest_csv)
+    metrics = compute_cube_metrics(rows)
+    sha = file_sha256(dest_csv)
+    meta = {
+        "schema": "paper_mine.cube_release.v1",
+        "version": version,
+        "created_at": _utc_now(),
+        "notes": args.notes or "",
+        "git": git_meta(),
+        "sha256": sha,
+        "source_csv": str(cube_src),
+        "inventory_file": inventory_name,
+        "metrics": metrics,
+    }
+    write_json(dest / "manifest.json", meta)
+    write_json(dest / "metrics.json", metrics)
+
+    index = load_cube_index()
+    cubes = [c for c in index.get("cubes", []) if c.get("version") != version]
+    cubes.append(
+        {
+            "version": version,
+            "created_at": meta["created_at"],
+            "notes": meta["notes"],
+            "git_commit": (meta.get("git") or {}).get("commit"),
+            "sha256": sha,
+            "metrics": {
+                "n_cells": metrics.get("n_cells"),
+                "n_priority_cells": metrics.get("n_priority_cells"),
+                "pct_priority_cells": metrics.get("pct_priority_cells"),
+                "schema_versions": metrics.get("schema_versions"),
+                "n_batches": metrics.get("n_batches"),
+            },
+            "local_path": str(dest.relative_to(ROOT)),
+        }
+    )
+    cubes.sort(key=lambda c: c["version"])
+    index["cubes"] = cubes
+    index["updated_at"] = _utc_now()
+    save_cube_index(index)
+
+    print(f"Snapshotted cube {version} → {dest}")
+    print(f"  source: {cube_src}")
+    print(f"  sha256: {sha}")
+    print(json.dumps(metrics, indent=2))
+
+    if args.push:
+        return cmd_cube_push(
+            argparse.Namespace(
+                version=version,
+                backend=args.backend,
+                hf_repo=args.hf_repo,
+                dry_run=False,
+                private=args.private,
+            )
+        )
+    return 0
+
+
+def cmd_cube_push(args: argparse.Namespace) -> int:
+    version = args.version or (list_local_cube_versions()[-1] if list_local_cube_versions() else None)
+    if not version:
+        print("ERROR: no local cube freezes to push", file=sys.stderr)
+        return 1
+    backend = resolve_backend(getattr(args, "backend", None))
+    if backend != "huggingface":
+        print(
+            "ERROR: cube freezes currently support --backend huggingface only "
+            "(GitHub Releases is mining-only).",
+            file=sys.stderr,
+        )
+        return 1
+    repo = resolve_hf_repo(getattr(args, "hf_repo", None)) or default_hf_repo()
+    if not repo:
+        print(
+            f"ERROR: set {DEFAULT_HF_ENV}=USER/proteobench-mining-releases or pass --hf-repo",
+            file=sys.stderr,
+        )
+        return 1
+    if resolve_hf_repo(getattr(args, "hf_repo", None)) is None and default_hf_repo():
+        print(f"Using default HF repo {repo} (set {DEFAULT_HF_ENV} to override)")
+    return hf_push_cube(version, repo, dry_run=args.dry_run, private=getattr(args, "private", False))
+
+
+def cmd_cube_pull(args: argparse.Namespace) -> int:
+    backend = resolve_backend(getattr(args, "backend", None))
+    if backend != "huggingface":
+        print("ERROR: cube pull supports --backend huggingface only", file=sys.stderr)
+        return 1
+    repo = resolve_hf_repo(getattr(args, "hf_repo", None)) or default_hf_repo()
+    if not repo:
+        print(f"ERROR: set {DEFAULT_HF_ENV} or --hf-repo", file=sys.stderr)
+        return 1
+    return hf_pull_cube(args.version, repo, force=args.force, dry_run=args.dry_run)
+
+
+def cmd_cube_list(args: argparse.Namespace) -> int:
+    index = load_cube_index()
+    local = list_local_cube_versions()
+    print("Local cube freezes:")
+    if not local:
+        print("  (none)")
+    for v in local:
+        entry = next((c for c in index.get("cubes", []) if c.get("version") == v), None)
+        if entry:
+            m = entry.get("metrics") or {}
+            print(
+                f"  {v}  cells={m.get('n_cells')}  "
+                f"priority={m.get('n_priority_cells')}  "
+                f"sha256={(entry.get('sha256') or '')[:12]}…  "
+                f"notes={entry.get('notes')!r}"
+            )
+        else:
+            print(f"  {v}")
+
+    if args.remote:
+        backend = resolve_backend(getattr(args, "backend", None))
+        print()
+        if backend != "huggingface":
+            print("Remote cube list supports huggingface only", file=sys.stderr)
+            return 1
+        repo = resolve_hf_repo(getattr(args, "hf_repo", None)) or default_hf_repo()
+        if not repo:
+            print(f"Remote HF: set {DEFAULT_HF_ENV}", file=sys.stderr)
+            return 1
+        return hf_list_cubes(repo)
+    return 0
+
+
+def cmd_cube_show(args: argparse.Namespace) -> int:
+    man = CUBES_DIR / args.version / "manifest.json"
+    if not man.exists():
+        print(f"ERROR: no cube manifest for {args.version}", file=sys.stderr)
+        return 1
+    print(json.dumps(read_json(man), indent=2))
     return 0
 
 
@@ -331,7 +678,12 @@ def _ensure_hf_repo(api: Any, repo_id: str, private: bool) -> None:
         api.create_repo(repo_id=repo_id, repo_type="dataset", private=private, exist_ok=True)
 
 
-def _write_hf_dataset_card(repo_dir: Path, index: dict[str, Any], repo_id: str) -> None:
+def _write_hf_dataset_card(
+    repo_dir: Path,
+    mining_index: dict[str, Any],
+    cube_index: dict[str, Any],
+    repo_id: str,
+) -> None:
     lines = [
         "---",
         "license: apache-2.0",
@@ -339,34 +691,72 @@ def _write_hf_dataset_card(repo_dir: Path, index: dict[str, Any], repo_id: str) 
         "  - proteomics",
         "  - benchmark",
         "  - proteobench",
-        "pretty_name: ProteoBench paper-mine releases",
+        "pretty_name: ProteoBench mining + cube releases",
         "---",
         "",
-        "# ProteoBench paper-mine releases",
+        "# ProteoBench mining + cube releases",
         "",
-        "Versioned candidate-task snapshots from the ProteoBench literature miner.",
+        "Versioned freezes from the ProteoBench literature miner and its **data cube** taxonomy.",
         "Code lives in the ProteoBench GitHub repo; **data versions live here** so git stays small.",
         "",
         f"Repo: `{repo_id}`",
         "",
-        "## Versions",
+        "## Layout",
         "",
-        "| version | candidates | % with public accessions | notes |",
-        "|---|---:|---:|---|",
+        "```text",
+        "cubes/vNNNN/       data-cube inventory freezes (taxonomy)",
+        "releases/vNNNN/    paper-mine candidate freezes",
+        "index.json         mining release index",
+        "cubes/index.json   cube release index",
+        "```",
+        "",
+        "## Data cube versions",
+        "",
+        "The cube is the analytical-category × evidence-family × task-depth inventory "
+        "used to drive literature mining.",
+        "",
+        "| version | cells | priority cells | schema | notes |",
+        "|---|---:|---:|---|---|",
     ]
-    for r in index.get("releases") or []:
+    for c in cube_index.get("cubes") or []:
+        m = c.get("metrics") or {}
+        notes = (c.get("notes") or "").replace("|", "\\|")
+        schemas = m.get("schema_versions") or []
+        schema_s = ", ".join(str(s) for s in schemas) if schemas else ""
+        lines.append(
+            f"| {c.get('version')} | {m.get('n_cells', '')} | "
+            f"{m.get('n_priority_cells', '')} | {schema_s} | {notes} |"
+        )
+    if not (cube_index.get("cubes") or []):
+        lines.append("| *(none yet)* | | | | |")
+
+    lines.extend(
+        [
+            "",
+            "## Mining release versions",
+            "",
+            "| version | candidates | % with public accessions | cube | notes |",
+            "|---|---:|---:|---|---|",
+        ]
+    )
+    for r in mining_index.get("releases") or []:
         m = r.get("metrics") or {}
         notes = (r.get("notes") or "").replace("|", "\\|")
+        cube_v = r.get("cube_version") or ""
         lines.append(
             f"| {r.get('version')} | {m.get('n_candidates', '')} | "
-            f"{m.get('pct_with_public_accessions', '')} | {notes} |"
+            f"{m.get('pct_with_public_accessions', '')} | {cube_v} | {notes} |"
         )
+    if not (mining_index.get("releases") or []):
+        lines.append("| *(none yet)* | | | | |")
+
     lines.extend(
         [
             "",
             "## Pull",
             "",
             "```bash",
+            f"python release.py cube pull v0001 --backend huggingface --hf-repo {repo_id}",
             f"python release.py pull v0001 --backend huggingface --hf-repo {repo_id}",
             "# or:",
             f"huggingface-cli download {repo_id} --repo-type dataset --local-dir ./releases_pull",
@@ -380,6 +770,37 @@ def _write_hf_dataset_card(repo_dir: Path, index: dict[str, Any], repo_id: str) 
     (repo_dir / "README.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+def _hf_refresh_indexes(api: Any, repo_id: str, commit_message: str) -> None:
+    """Upload root index.json, cubes/index.json (if present), and README card."""
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        mining_index = load_index()
+        cube_index = load_cube_index()
+        write_json(td_path / "index.json", mining_index)
+        _write_hf_dataset_card(td_path, mining_index, cube_index, repo_id)
+        api.upload_folder(
+            folder_path=str(td_path),
+            path_in_repo=".",
+            repo_id=repo_id,
+            repo_type="dataset",
+            commit_message=commit_message,
+            allow_patterns=["index.json", "README.md"],
+        )
+
+        if (CUBES_DIR / "index.json").exists():
+            cube_td = td_path / "cubes_root"
+            cube_td.mkdir()
+            write_json(cube_td / "index.json", cube_index)
+            api.upload_folder(
+                folder_path=str(cube_td),
+                path_in_repo="cubes",
+                repo_id=repo_id,
+                repo_type="dataset",
+                commit_message=f"{commit_message} (cube index)",
+                allow_patterns=["index.json"],
+            )
+
+
 def hf_push(version: str, repo_id: str, dry_run: bool = False, private: bool = False) -> int:
     local = RELEASES_DIR / version
     if not local.exists():
@@ -389,13 +810,12 @@ def hf_push(version: str, repo_id: str, dry_run: bool = False, private: bool = F
     api = _hf_api()
     if dry_run:
         print(f"[dry-run] would upload {local} → hf://datasets/{repo_id}/releases/{version}/")
-        print(f"[dry-run] would refresh index.json + README on {repo_id}")
+        print(f"[dry-run] would refresh index.json + cubes/index.json + README on {repo_id}")
         return 0
 
     _ensure_hf_repo(api, repo_id, private=private)
 
-    # Upload one version folder under releases/vNNNN
-    print(f"Uploading {version} → https://huggingface.co/datasets/{repo_id}")
+    print(f"Uploading mining {version} → https://huggingface.co/datasets/{repo_id}")
     api.upload_folder(
         folder_path=str(local),
         path_in_repo=f"releases/{version}",
@@ -403,24 +823,37 @@ def hf_push(version: str, repo_id: str, dry_run: bool = False, private: bool = F
         repo_type="dataset",
         commit_message=f"Add paper-mine release {version}",
     )
-
-    # Refresh index + card at repo root (from local index)
-    with tempfile.TemporaryDirectory() as td:
-        td_path = Path(td)
-        index = load_index()
-        write_json(td_path / "index.json", index)
-        _write_hf_dataset_card(td_path, index, repo_id)
-        # also drop a copy of metrics for the version at root-friendly path
-        api.upload_folder(
-            folder_path=str(td_path),
-            path_in_repo=".",
-            repo_id=repo_id,
-            repo_type="dataset",
-            commit_message=f"Update index for {version}",
-            allow_patterns=["index.json", "README.md"],
-        )
+    _hf_refresh_indexes(api, repo_id, commit_message=f"Update indexes for mining {version}")
 
     print(f"Pushed {version} → https://huggingface.co/datasets/{repo_id}/tree/main/releases/{version}")
+    return 0
+
+
+def hf_push_cube(version: str, repo_id: str, dry_run: bool = False, private: bool = False) -> int:
+    local = CUBES_DIR / version
+    if not local.exists():
+        print(f"ERROR: missing {local}", file=sys.stderr)
+        return 1
+
+    api = _hf_api()
+    if dry_run:
+        print(f"[dry-run] would upload {local} → hf://datasets/{repo_id}/cubes/{version}/")
+        print(f"[dry-run] would refresh indexes + README on {repo_id}")
+        return 0
+
+    _ensure_hf_repo(api, repo_id, private=private)
+
+    print(f"Uploading cube {version} → https://huggingface.co/datasets/{repo_id}")
+    api.upload_folder(
+        folder_path=str(local),
+        path_in_repo=f"cubes/{version}",
+        repo_id=repo_id,
+        repo_type="dataset",
+        commit_message=f"Add data-cube freeze {version}",
+    )
+    _hf_refresh_indexes(api, repo_id, commit_message=f"Update indexes for cube {version}")
+
+    print(f"Pushed cube {version} → https://huggingface.co/datasets/{repo_id}/tree/main/cubes/{version}")
     return 0
 
 
@@ -442,7 +875,6 @@ def hf_pull(version: str, repo_id: str, force: bool = False, dry_run: bool = Fal
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
 
-    # Download only that version subtree
     cached = snapshot_download(
         repo_id=repo_id,
         repo_type="dataset",
@@ -452,38 +884,97 @@ def hf_pull(version: str, repo_id: str, force: bool = False, dry_run: bool = Fal
     if not src.exists():
         print(f"ERROR: {version} not found in {repo_id}", file=sys.stderr)
         return 1
-    # copy out of HF cache into our releases dir
     shutil.copytree(src, dest, dirs_exist_ok=True)
     print(f"Pulled {version} → {dest}")
     return 0
 
 
-def hf_list(repo_id: str) -> int:
-    api = _hf_api()
-    print(f"Remote Hugging Face dataset: https://huggingface.co/datasets/{repo_id}")
+def hf_pull_cube(version: str, repo_id: str, force: bool = False, dry_run: bool = False) -> int:
+    dest = CUBES_DIR / version
+    if dest.exists() and not force:
+        print(f"ERROR: {dest} exists. Use --force to overwrite.", file=sys.stderr)
+        return 1
+    if dry_run:
+        print(f"[dry-run] would download hf://datasets/{repo_id}/cubes/{version} → {dest}")
+        return 0
+
     try:
-        files = api.list_repo_tree(repo_id=repo_id, repo_type="dataset", path_in_repo="releases", recursive=False)
+        from huggingface_hub import snapshot_download
+    except ImportError as e:
+        raise SystemExit("pip install huggingface_hub") from e
+
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+
+    cached = snapshot_download(
+        repo_id=repo_id,
+        repo_type="dataset",
+        allow_patterns=[f"cubes/{version}/**"],
+    )
+    src = Path(cached) / "cubes" / version
+    if not src.exists():
+        print(f"ERROR: cube {version} not found in {repo_id}", file=sys.stderr)
+        return 1
+    shutil.copytree(src, dest, dirs_exist_ok=True)
+    print(f"Pulled cube {version} → {dest}")
+    return 0
+
+
+def _hf_list_versions(repo_id: str, path_in_repo: str, index_filename: str, index_key: str) -> list[str]:
+    api = _hf_api()
+    try:
+        files = api.list_repo_tree(
+            repo_id=repo_id,
+            repo_type="dataset",
+            path_in_repo=path_in_repo,
+            recursive=False,
+        )
         names = sorted(
             {
                 getattr(f, "path", "").rstrip("/").split("/")[-1]
                 for f in files
-                if re.fullmatch(r"v\d{4}", getattr(f, "path", "").rstrip("/").split("/")[-1] or "")
+                if _valid_version(getattr(f, "path", "").rstrip("/").split("/")[-1] or "")
             }
         )
-        if not names:
-            # fallback: list via index.json
-            try:
-                path = api.hf_hub_download(repo_id=repo_id, repo_type="dataset", filename="index.json")
-                index = read_json(Path(path))
-                names = [r["version"] for r in index.get("releases") or []]
-            except Exception:
-                names = []
+        if names:
+            return names
+    except Exception:
+        pass
+    try:
+        path = api.hf_hub_download(repo_id=repo_id, repo_type="dataset", filename=index_filename)
+        index = read_json(Path(path))
+        return [r["version"] for r in index.get(index_key) or [] if r.get("version")]
+    except Exception:
+        return []
+
+
+def hf_list(repo_id: str) -> int:
+    print(f"Remote Hugging Face dataset: https://huggingface.co/datasets/{repo_id}")
+    print("Mining releases:")
+    try:
+        names = _hf_list_versions(repo_id, "releases", "index.json", "releases")
         if not names:
             print("  (no versions found)")
         for n in names:
             print(f"  {n}")
     except Exception as e:
-        print(f"ERROR listing remote: {e}", file=sys.stderr)
+        print(f"ERROR listing remote mining releases: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def hf_list_cubes(repo_id: str) -> int:
+    print(f"Remote Hugging Face dataset: https://huggingface.co/datasets/{repo_id}")
+    print("Cube freezes:")
+    try:
+        names = _hf_list_versions(repo_id, "cubes", "cubes/index.json", "cubes")
+        if not names:
+            print("  (no versions found)")
+        for n in names:
+            print(f"  {n}")
+    except Exception as e:
+        print(f"ERROR listing remote cubes: {e}", file=sys.stderr)
         return 1
     return 0
 
@@ -653,21 +1144,17 @@ def cmd_push(args: argparse.Namespace) -> int:
         return 1
     backend = resolve_backend(getattr(args, "backend", None))
     if backend == "huggingface":
-        repo = resolve_hf_repo(getattr(args, "hf_repo", None))
+        explicit = resolve_hf_repo(getattr(args, "hf_repo", None))
+        repo = explicit or default_hf_repo()
         if not repo:
-            # sensible default from GitHub user
-            slug = github_slug()
-            if slug:
-                owner = slug.split("/")[0]
-                repo = f"{owner}/proteobench-mining-releases"
-                print(f"Using default HF repo {repo} (set {DEFAULT_HF_ENV} to override)")
-            else:
-                print(
-                    f"ERROR: set {DEFAULT_HF_ENV}=USER/proteobench-mining-releases "
-                    "or pass --hf-repo (or use --backend github)",
-                    file=sys.stderr,
-                )
-                return 1
+            print(
+                f"ERROR: set {DEFAULT_HF_ENV}=USER/proteobench-mining-releases "
+                "or pass --hf-repo (or use --backend github)",
+                file=sys.stderr,
+            )
+            return 1
+        if explicit is None:
+            print(f"Using default HF repo {repo} (set {DEFAULT_HF_ENV} to override)")
         return hf_push(version, repo, dry_run=args.dry_run, private=getattr(args, "private", False))
     return github_push(version, dry_run=args.dry_run)
 
@@ -675,10 +1162,7 @@ def cmd_push(args: argparse.Namespace) -> int:
 def cmd_pull(args: argparse.Namespace) -> int:
     backend = resolve_backend(getattr(args, "backend", None))
     if backend == "huggingface":
-        repo = resolve_hf_repo(getattr(args, "hf_repo", None))
-        if not repo:
-            slug = github_slug()
-            repo = f"{slug.split('/')[0]}/proteobench-mining-releases" if slug else None
+        repo = resolve_hf_repo(getattr(args, "hf_repo", None)) or default_hf_repo()
         if not repo:
             print(f"ERROR: set {DEFAULT_HF_ENV} or --hf-repo", file=sys.stderr)
             return 1
@@ -689,17 +1173,18 @@ def cmd_pull(args: argparse.Namespace) -> int:
 def cmd_list(args: argparse.Namespace) -> int:
     index = load_index()
     local = list_local_versions()
-    print("Local releases:")
+    print("Local mining releases:")
     if not local:
         print("  (none)")
     for v in local:
         entry = next((r for r in index.get("releases", []) if r.get("version") == v), None)
         if entry:
             m = entry.get("metrics") or {}
+            cube_v = entry.get("cube_version") or "—"
             print(
                 f"  {v}  candidates={m.get('n_candidates')}  "
                 f"with_accessions={m.get('pct_with_public_accessions')}%  "
-                f"notes={entry.get('notes')!r}"
+                f"cube={cube_v}  notes={entry.get('notes')!r}"
             )
         else:
             print(f"  {v}")
@@ -708,10 +1193,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         backend = resolve_backend(getattr(args, "backend", None))
         print()
         if backend == "huggingface":
-            repo = resolve_hf_repo(getattr(args, "hf_repo", None))
-            if not repo:
-                slug = github_slug()
-                repo = f"{slug.split('/')[0]}/proteobench-mining-releases" if slug else None
+            repo = resolve_hf_repo(getattr(args, "hf_repo", None)) or default_hf_repo()
             if not repo:
                 print(f"Remote HF: set {DEFAULT_HF_ENV}", file=sys.stderr)
                 return 1
@@ -760,7 +1242,7 @@ def cmd_show(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Paper-mine versioned releases (local + Hugging Face / GitHub Releases)"
+        description="Versioned freezes for paper-mine candidates + data cube (local + Hugging Face)"
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -776,7 +1258,7 @@ def build_parser() -> argparse.ArgumentParser:
             help=f"HF dataset id USER/name. Env: {DEFAULT_HF_ENV}",
         )
 
-    s = sub.add_parser("snapshot", help="Freeze current out/dataset as next version")
+    s = sub.add_parser("snapshot", help="Freeze current out/dataset as next mining version")
     s.add_argument("--version", help="Force version id (default: next vNNNN)")
     s.add_argument("--notes", default="", help="What changed in this version")
     s.add_argument("--config", type=Path, default=None)
@@ -789,33 +1271,71 @@ def build_parser() -> argparse.ArgumentParser:
     add_backend(s)
     s.set_defaults(func=cmd_snapshot)
 
-    s = sub.add_parser("push", help="Upload a local release to cloud")
+    s = sub.add_parser("push", help="Upload a local mining release to cloud")
     s.add_argument("--version", default=None, help="Default: latest local")
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--private", action="store_true", help="HF: private repo")
     add_backend(s)
     s.set_defaults(func=cmd_push)
 
-    s = sub.add_parser("pull", help="Download a release from cloud")
+    s = sub.add_parser("pull", help="Download a mining release from cloud")
     s.add_argument("version")
     s.add_argument("--force", action="store_true")
     s.add_argument("--dry-run", action="store_true")
     add_backend(s)
     s.set_defaults(func=cmd_pull)
 
-    s = sub.add_parser("list", help="List local (and optional remote) releases")
+    s = sub.add_parser("list", help="List local (and optional remote) mining releases")
     s.add_argument("--remote", action="store_true")
     add_backend(s)
     s.set_defaults(func=cmd_list)
 
-    s = sub.add_parser("compare", help="Diff metrics between two local versions")
+    s = sub.add_parser("compare", help="Diff metrics between two local mining versions")
     s.add_argument("version_a")
     s.add_argument("version_b")
     s.set_defaults(func=cmd_compare)
 
-    s = sub.add_parser("show", help="Print manifest for a version")
+    s = sub.add_parser("show", help="Print mining release manifest for a version")
     s.add_argument("version")
     s.set_defaults(func=cmd_show)
+
+    # ── cube subcommands ────────────────────────────────────────────────────
+    cube = sub.add_parser("cube", help="Versioned freezes of the data-cube inventory")
+    cube_sub = cube.add_subparsers(dest="cube_cmd", required=True)
+
+    cs = cube_sub.add_parser("snapshot", help="Freeze current cube CSV as next cube version")
+    cs.add_argument("--version", help="Force version id (default: next vNNNN)")
+    cs.add_argument("--notes", default="", help="What changed in this cube version")
+    cs.add_argument("--config", type=Path, default=None, help="paper_mine config (for cube_csv path)")
+    cs.add_argument("--cube-csv", type=Path, default=None, help="Override cube CSV path")
+    cs.add_argument("--force", action="store_true")
+    cs.add_argument("--push", action="store_true", help="Upload to HF after snapshot")
+    cs.add_argument("--private", action="store_true", help="HF: create private dataset repo")
+    add_backend(cs)
+    cs.set_defaults(func=cmd_cube_snapshot)
+
+    cs = cube_sub.add_parser("push", help="Upload a local cube freeze to Hugging Face")
+    cs.add_argument("--version", default=None, help="Default: latest local cube")
+    cs.add_argument("--dry-run", action="store_true")
+    cs.add_argument("--private", action="store_true", help="HF: private repo")
+    add_backend(cs)
+    cs.set_defaults(func=cmd_cube_push)
+
+    cs = cube_sub.add_parser("pull", help="Download a cube freeze from Hugging Face")
+    cs.add_argument("version")
+    cs.add_argument("--force", action="store_true")
+    cs.add_argument("--dry-run", action="store_true")
+    add_backend(cs)
+    cs.set_defaults(func=cmd_cube_pull)
+
+    cs = cube_sub.add_parser("list", help="List local (and optional remote) cube freezes")
+    cs.add_argument("--remote", action="store_true")
+    add_backend(cs)
+    cs.set_defaults(func=cmd_cube_list)
+
+    cs = cube_sub.add_parser("show", help="Print cube freeze manifest")
+    cs.add_argument("version")
+    cs.set_defaults(func=cmd_cube_show)
 
     return p
 

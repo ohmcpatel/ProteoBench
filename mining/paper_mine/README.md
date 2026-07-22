@@ -17,15 +17,20 @@ paper_mine/
   stage2_rank.py        # 2. heuristic top-K
   stage3_extract.py     # 3. Claude SDK extraction
   stage3_extract_cli.py # 3b. Claude CLI extraction (alternate)
-  stage4_assemble.py    # 4. dataset + review snapshot
-  release.py            # freeze v0001, v0002, … (+ optional GCS)
+  stage4_assemble.py    # 4. dataset + review snapshot (+ yield snapshot)
+  compute_yield.py      # funnel / drop-reason observability snapshot
+  yield_schemas.py      # StageId, DropReasonCode, YieldSnapshot contracts
+  release.py            # freeze mining + data-cube versions (HF / GitHub)
   schemas.py / common.py
   out/                  # working run (gitignored)
-  releases/             # versioned freezes (gitignored)
+  out/observability/    # yield_snapshot.json (funnel UI)
+  releases/             # versioned mining freezes (gitignored)
+  cubes/                # versioned data-cube freezes (gitignored)
   _scratch/             # accidental dumps; delete anytime
 ```
 
-Cube taxonomy: [`../data/cube_inventory_270_cells.csv`](../data/cube_inventory_270_cells.csv).
+Cube taxonomy (live working copy): [`../data/cube_inventory_270_cells.csv`](../data/cube_inventory_270_cells.csv).
+Named freezes: `python release.py cube snapshot` → `cubes/vNNNN/` (+ optional HF push).
 
 ## Setup
 
@@ -129,12 +134,50 @@ If a reviewer’s list is empty / missing, they get `default` (all candidates af
 
 Remote share: run both servers and expose with Tailscale, `cloudflared tunnel`, or ngrok.
 
-## Versioned releases (local + Google Cloud)
+## Versioned freezes (local + cloud)
+
+Two version axes live under `release.py`:
+
+| Axis | What | Local path | HF path |
+|------|------|------------|---------|
+| **Cube** | taxonomy inventory CSV | `cubes/vNNNN/` | `cubes/vNNNN/` |
+| **Mining** | candidate-task snapshot | `releases/vNNNN/` | `releases/vNNNN/` |
+
+### Data cube
+
+Freeze the live inventory whenever the taxonomy changes (targets, archetypes, cell set):
+
+```bash
+python release.py cube snapshot --notes "initial 270-cell inventory"
+python release.py cube list
+python release.py cube show v0001
+
+# optional: upload immediately
+python release.py cube snapshot --notes "…" --push
+# or later:
+python release.py cube push
+python release.py cube pull v0001
+python release.py cube list --remote
+```
+
+Each cube freeze contains:
+
+| Path | Contents |
+|------|----------|
+| `cube_inventory.csv` | full inventory snapshot |
+| `manifest.json` | version, notes, git sha, **sha256**, metrics |
+| `metrics.json` | cell counts, priority cells, batches, schema versions |
+
+### Mining releases
 
 Each time you improve the miner/infra and re-run, freeze a **release** so you can
 diff quality over time (e.g. % of tasks with a public dataset accession attached).
+Mining manifests pin the cube via `sha256` and matching `cube_version` when a local cube freeze matches.
 
 ```bash
+# Prefer freezing the cube first so the pin resolves
+python release.py cube snapshot --notes "cube used for this mine"
+
 # After stage4_assemble.py
 python release.py snapshot --notes "v1 baseline pilot"
 
@@ -146,11 +189,11 @@ python release.py compare v0001 v0002
 python release.py show v0002
 ```
 
-Releases land in `paper_mine/releases/v0001/`, `v0002/`, … (gitignored) with:
+Mining releases land in `paper_mine/releases/v0001/`, `v0002/`, … (gitignored) with:
 
 | Path | Contents |
 |------|----------|
-| `manifest.json` | version, git sha, notes, metrics |
+| `manifest.json` | version, git sha, notes, metrics, **cube pin** |
 | `metrics.json` | counts + `% with public accessions` |
 | `dataset/` | candidates.jsonl/csv, coverage, by_cell, stubs |
 | `ranked/` | stage2 shortlists |
@@ -161,8 +204,8 @@ Releases land in `paper_mine/releases/v0001/`, `v0002/`, … (gitignored) with:
 
 Datasets stay **out of GitHub git history**. Push versioned bundles to:
 
-1. **Hugging Face Hub** (recommended, free public datasets)
-2. **GitHub Releases** (free; uses `gh`, no extra account)
+1. **Hugging Face Hub** (recommended; cube + mining)
+2. **GitHub Releases** (mining only; free via `gh`)
 
 ```bash
 # --- Hugging Face (free public dataset repo) ---
@@ -170,11 +213,14 @@ pip install huggingface_hub
 huggingface-cli login          # one-time; create token at hf.co/settings/tokens
 export PAPER_MINE_HF_REPO=YOUR_USER/proteobench-mining-releases
 
+python release.py cube push --backend huggingface
 python release.py push --backend huggingface
+python release.py cube list --remote --backend huggingface
 python release.py list --remote --backend huggingface
+python release.py cube pull v0001 --backend huggingface
 python release.py pull v0001 --backend huggingface
 
-# --- GitHub Releases (works with existing `gh auth login`) ---
+# --- GitHub Releases (mining only; works with existing `gh auth login`) ---
 python release.py push --backend github
 python release.py list --remote --backend github
 python release.py pull v0001 --backend github
@@ -183,6 +229,7 @@ python release.py pull v0001 --backend github
 Or snapshot + upload:
 
 ```bash
+python release.py cube snapshot --notes "…" --push
 python release.py snapshot --notes "…" --push --backend github
 ```
 
@@ -190,13 +237,16 @@ HF layout:
 
 ```text
 https://huggingface.co/datasets/YOUR_USER/proteobench-mining-releases
+  cubes/v0001/...
+  cubes/v0002/...
+  cubes/index.json
   releases/v0001/...
   releases/v0002/...
   index.json
   README.md
 ```
 
-GitHub layout: release tag `mining-v0001` with `proteobench-mining-v0001.tar.gz`.
+GitHub layout: release tag `mining-v0001` with `proteobench-mining-v0001.tar.gz` (mining only).
 
 ## Scale later
 

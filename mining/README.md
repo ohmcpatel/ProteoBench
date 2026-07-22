@@ -5,9 +5,13 @@ Everything used to **invent and review** ProteoBench candidate tasks from litera
 ```text
 mining/
   data/                 # cube inventory CSV (taxonomy of cells)
-  paper_mine/           # PubMed/Europe PMC → candidate cards → releases
+  paper_mine/           # PubMed/Europe PMC → candidate cards → versioned freezes
   review_app/           # expert keep / revise / reject UI
+  observability/        # yield funnel dashboard (drop-off + reasons)
 ```
+
+Cube + mining freezes (local + Hugging Face): `paper_mine/release.py`
+(`cube snapshot` / `snapshot`, then `push`).
 
 This is **not** the agent benchmark harness. Running agents lives at the repo root
 (`proteobench/`, `example_evals/`, …). See [docs/repo_layout.md](../docs/repo_layout.md).
@@ -37,4 +41,18 @@ cd review_app/frontend && npm install && npm run dev
 # open http://127.0.0.1:5173
 ```
 
-Details: [paper_mine/README.md](paper_mine/README.md), [review_app/README.md](review_app/README.md).
+Details: [paper_mine/README.md](paper_mine/README.md), [review_app/README.md](review_app/README.md),
+[observability/README.md](observability/README.md).
+
+## Yield observability
+
+```bash
+cd paper_mine && python compute_yield.py   # out/observability/yield_snapshot.json
+
+# dashboard
+cd ..
+export REVIEW_TOKEN=proteobench-review
+paper_mine/.venv/bin/python -m uvicorn observability.backend.app:app --reload --port 8001
+# other terminal
+cd observability/frontend && npm install && npm run dev   # http://127.0.0.1:5174
+```
