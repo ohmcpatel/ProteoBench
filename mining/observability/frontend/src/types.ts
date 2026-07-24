@@ -107,3 +107,24 @@ export type DropoffEdge = {
   unit_to: string;
   drop_reasons: DropReason[];
 };
+
+export type CandidateDataReport = {
+  accession: string;
+  validation: {
+    ready_for_task_bundle?: boolean;
+    warnings?: string[];
+    manifest_counts?: { total?: number; raw?: number; processed?: number };
+  };
+  selected_files: { file_name: string; category?: string; size_bytes?: number }[];
+  downloads: {
+    file_name: string;
+    status?: string;
+    size_bytes?: number;
+    preview?: string | null;
+  }[];
+};
+
+export type CandidateDataResponse = {
+  candidate_id: string;
+  reports: CandidateDataReport[];
+};

@@ -48,6 +48,50 @@ def snapshot_path(cfg: dict[str, Any]) -> Path:
     return obs / "yield_snapshot.json"
 
 
+def data_reports_for_candidate(candidate_id: str) -> list[dict[str, Any]]:
+    """Return fetched accession reports plus safe previews of downloaded text files."""
+    cfg = load_config()
+    data_dir = Path(cfg["paths"].get("data_dir", ""))
+    if not data_dir.exists():
+        return []
+    reports: list[dict[str, Any]] = []
+    text_suffixes = {".csv", ".tsv", ".txt", ".sdrf", ".json", ".xml", ".pepxml", ".mztab", ".mzid", ".mzidentml", ".params"}
+    for path in data_dir.glob("*/*.json"):
+        try:
+            report = read_json(path)
+        except Exception:
+            continue
+        if report.get("candidate_id") != candidate_id:
+            continue
+        downloads = []
+        for item in report.get("downloads") or []:
+            row = {
+                "file_name": item.get("file_name"),
+                "status": item.get("status"),
+                "size_bytes": item.get("size_bytes"),
+                "preview": None,
+            }
+            local_path = item.get("path")
+            if local_path:
+                file_path = Path(local_path).resolve()
+                try:
+                    file_path.relative_to(data_dir.resolve())
+                    if file_path.exists() and file_path.suffix.lower() in text_suffixes:
+                        row["preview"] = file_path.read_text(encoding="utf-8", errors="replace")[:5000]
+                except (ValueError, OSError):
+                    pass
+            downloads.append(row)
+        reports.append(
+            {
+                "accession": report.get("accession"),
+                "validation": report.get("validation") or {},
+                "selected_files": report.get("selected_files") or [],
+                "downloads": downloads,
+            }
+        )
+    return sorted(reports, key=lambda x: str(x.get("accession") or ""))
+
+
 def load_or_compute(force: bool = False) -> YieldSnapshot:
     cfg = load_config()
     path = snapshot_path(cfg)
@@ -185,6 +229,12 @@ def yield_candidates(
         "n": total,
         "candidates": [c.model_dump(mode="json") for c in rows[:limit]],
     }
+
+
+@app.get("/api/yield/candidate-data/{candidate_id}")
+def candidate_data(candidate_id: str, x_review_token: str | None = Header(default=None)) -> dict[str, Any]:
+    require_token(x_review_token)
+    return {"candidate_id": candidate_id, "reports": data_reports_for_candidate(candidate_id)}
 
 
 @app.get("/api/yield/dropoffs")

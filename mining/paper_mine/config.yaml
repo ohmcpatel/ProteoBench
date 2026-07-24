@@ -35,3 +35,12 @@ paths:
   dataset_dir: out/dataset
   costs_dir: out/costs
   observability_dir: out/observability
+  data_dir: out/data
+
+# Stage 5 — public accession fetch
+data_fetch:
+  pride_api_base: https://www.ebi.ac.uk/pride/ws/archive/v3
+  request_timeout_seconds: 120
+  max_manifest_pages: 100
+  manifest_page_size: 100
+  max_download_bytes: 524288000  # 500 MiB per selected file

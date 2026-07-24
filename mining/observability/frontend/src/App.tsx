@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   CandidateYieldRow,
+  CandidateDataResponse,
   CellYield,
   DropoffEdge,
   YieldSnapshot,
@@ -56,6 +57,29 @@ function shortStage(id?: string | null): string {
   return id.replace(/^S\d+_/, "").replace(/_/g, " ");
 }
 
+const FRIENDLY_REASONS: Record<string, string> = {
+  no_public_accession: "No public dataset link",
+  data_feasibility_unknown: "Dataset availability is unclear",
+  data_feasibility_low: "Dataset is difficult to use",
+  inputs_marked_missing: "Required inputs are missing",
+  required_inputs_empty: "Required inputs were not specified",
+  review_unreviewed: "Waiting for expert review",
+  review_revise: "Needs revision",
+  review_reject: "Rejected in review",
+  viability_low: "Low task viability",
+  viability_medium: "Medium task viability",
+  extract_status_not_ok: "Paper extraction failed",
+  extract_missing: "No candidate was extracted",
+  paper_below_top_k: "Paper fell outside the top-ranked set",
+  cube_not_priority: "Cell was not in the priority set",
+  cube_batch_out_of_scope: "Cell was outside the pilot batches",
+  stub_not_emitted: "No draft eval was generated",
+};
+
+function friendlyReason(code: string, fallback?: string): string {
+  return FRIENDLY_REASONS[code] || fallback || code.replace(/_/g, " ");
+}
+
 export default function App() {
   const [token, setToken] = useState(loadToken);
   const [authed, setAuthed] = useState(false);
@@ -72,9 +96,12 @@ export default function App() {
   const [cellFilter, setCellFilter] = useState("");
   const [dropFilter, setDropFilter] = useState("");
   const [viaFilter, setViaFilter] = useState("");
+  const [dataFilter, setDataFilter] = useState("");
   const [selectedCand, setSelectedCand] = useState<CandidateYieldRow | null>(
     null
   );
+  const [candidateData, setCandidateData] = useState<CandidateDataResponse | null>(null);
+  const [candidateDataLoading, setCandidateDataLoading] = useState(false);
   const [selectedCell, setSelectedCell] = useState<CellYield | null>(null);
 
   const refresh = useCallback(async () => {
@@ -118,6 +145,24 @@ export default function App() {
     }
   }
 
+  async function inspectCandidateData(candidate: CandidateYieldRow) {
+    setSelectedCand(candidate);
+    setCandidateData(null);
+    setCandidateDataLoading(true);
+    try {
+      setCandidateData(
+        await api<CandidateDataResponse>(
+          `/api/yield/candidate-data/${encodeURIComponent(candidate.candidate_id)}`,
+          token
+        )
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCandidateDataLoading(false);
+    }
+  }
+
   const maxPassed = useMemo(() => {
     if (!snap?.stages?.length) return 1;
     return Math.max(...snap.stages.map((s) => s.passed), 1);
@@ -145,10 +190,11 @@ export default function App() {
       if (batchFilter && c.batch_id !== batchFilter) return false;
       if (cellFilter && c.cube_cell_id !== cellFilter) return false;
       if (viaFilter && (c.viability || "").toLowerCase() !== viaFilter) return false;
+      if (dataFilter && (c.data_feasibility || "").toLowerCase() !== dataFilter) return false;
       if (dropFilter && !c.drop_codes.includes(dropFilter)) return false;
       return true;
     });
-  }, [snap, batchFilter, cellFilter, viaFilter, dropFilter]);
+  }, [snap, batchFilter, cellFilter, viaFilter, dataFilter, dropFilter]);
 
   const allDropCodes = useMemo(() => {
     if (!snap) return [] as string[];
@@ -156,6 +202,17 @@ export default function App() {
     for (const c of snap.candidates) for (const d of c.drop_codes) s.add(d);
     return [...s].sort();
   }, [snap]);
+
+  const biggestDrop = useMemo(() => {
+    if (!edges.length) return null;
+    return edges.reduce((best, edge) => (edge.dropped > best.dropped ? edge : best));
+  }, [edges]);
+
+  const biggestReason = biggestDrop?.drop_reasons?.[0] || null;
+
+  const limelightProjectId = selectedCand?.issues
+    .join(" ")
+    .match(/Limelight\s+Project\s+ID\s*[=:]?\s*(\d+)/i)?.[1];
 
   if (!authed) {
     return (
@@ -165,11 +222,11 @@ export default function App() {
             ProteoBench <span style={{ color: "var(--accent)" }}>Yield</span>
           </h1>
           <p>
-            Pipeline observability — funnel conversion, drop reasons, and per-cell
-            attrition. Same token as the review app.
+            A plain-language view of where benchmark tasks disappear and why.
+            The default token is already filled in below.
           </p>
           <div className="field">
-            <label htmlFor="token">X-Review-Token</label>
+            <label htmlFor="token">Dashboard token</label>
             <input
               id="token"
               type="password"
@@ -180,7 +237,7 @@ export default function App() {
           </div>
           {error && <div className="error">{error}</div>}
           <button className="btn btn-primary" type="submit">
-            Open dashboard
+            Show me the yield
           </button>
         </form>
       </div>
@@ -229,49 +286,69 @@ export default function App() {
         <p className="notes">Notes: {snap.notes.join(" · ")}</p>
       ) : null}
 
+      <section className="answer-card">
+        <div>
+          <div className="eyebrow">Bottom line</div>
+          <h1>
+            {k.review_keep ?? "—"} task{Number(k.review_keep) === 1 ? "" : "s"} kept
+            from {k.candidates ?? "—"} candidates
+          </h1>
+          <p>
+            {biggestDrop
+              ? `The biggest loss is between ${biggestDrop.from_label.toLowerCase()} and ${biggestDrop.to_label.toLowerCase()}: ${biggestDrop.dropped} items drop out.`
+              : "The dashboard is still loading the main bottleneck."}
+          </p>
+        </div>
+        <div className="answer-callout">
+          <span>Primary reason</span>
+          <strong>{friendlyReason(biggestReason?.code || "", biggestReason?.label)}</strong>
+          {biggestReason && <small>{biggestReason.count} candidates</small>}
+        </div>
+      </section>
+
       <div className="kpi-grid">
         <div className="kpi">
-          <div className="label">Inventory</div>
+          <div className="label">Starting cells</div>
           <div className="value">{k.cube_inventory ?? "—"}</div>
-          <div className="hint">cube cells</div>
+          <div className="hint">possible task types</div>
         </div>
         <div className="kpi">
-          <div className="label">Priority</div>
+          <div className="label">Priority cells</div>
           <div className="value">{k.cube_priority ?? "—"}</div>
           <div className="hint">{String(k.pct_priority_of_inventory ?? "—")}% of inventory</div>
         </div>
         <div className="kpi">
-          <div className="label">Pilot scope</div>
+          <div className="label">Pilot cells</div>
           <div className="value">{k.cube_pilot_scope ?? "—"}</div>
-          <div className="hint">batches {(snap?.config_batches || []).join(", ") || "—"}</div>
+          <div className="hint">chosen for this pilot</div>
         </div>
         <div className="kpi">
-          <div className="label">Papers</div>
+          <div className="label">Papers found</div>
           <div className="value">{k.papers_fetched ?? "—"}</div>
           <div className="hint">→ ranked {k.papers_ranked ?? "—"}</div>
         </div>
         <div className="kpi">
-          <div className="label">Candidates</div>
+          <div className="label">Task ideas</div>
           <div className="value">{k.candidates ?? "—"}</div>
           <div className="hint">ok {k.candidates_ok ?? "—"}</div>
         </div>
         <div className="kpi warn">
-          <div className="label">Data-gated</div>
+          <div className="label">Data-ready ideas</div>
           <div className="value">{k.data_gated ?? "—"}</div>
           <div className="hint">{String(k.pct_data_of_ok ?? "—")}% of OK</div>
         </div>
         <div className="kpi danger">
-          <div className="label">Viability high</div>
+          <div className="label">Strong ideas</div>
           <div className="value">{k.viability_high ?? "—"}</div>
           <div className="hint">{String(k.pct_high_of_candidates ?? "—")}% of cands</div>
         </div>
         <div className="kpi ok">
-          <div className="label">Review keep</div>
+          <div className="label">Ready to keep</div>
           <div className="value">{k.review_keep ?? "—"}</div>
           <div className="hint">stubs {k.eval_stubs ?? "—"}</div>
         </div>
         <div className="kpi">
-          <div className="label">Accessions (OK)</div>
+          <div className="label">Ideas with a data link</div>
           <div className="value">{String(k.pct_accessions_of_ok ?? "—")}%</div>
           <div className="hint">high∩data {k.viability_high_and_data ?? "—"}</div>
         </div>
@@ -289,10 +366,10 @@ export default function App() {
       <div className="tabs">
         {(
           [
-            ["funnel", "Funnel & drop-off"],
-            ["cells", "Cells"],
-            ["candidates", "Candidates"],
-            ["issues", "Issue taxonomy"],
+            ["funnel", "What happened"],
+            ["cells", "Where it happened"],
+            ["candidates", "Task ideas"],
+            ["issues", "All reasons"],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -309,10 +386,10 @@ export default function App() {
       {tab === "funnel" && snap && (
         <div className="layout-2">
           <section className="card">
-            <h2 className="section-title">Yield funnel</h2>
+            <h2 className="section-title">How many items made it through?</h2>
             <p className="muted" style={{ marginTop: 0 }}>
-              Bar width = passed count relative to inventory. Conversion % is vs
-              previous stage (unit changes at papers → candidates).
+              Each row shows what remains after that step. Click a reason on the
+              right to see the affected task ideas.
             </p>
             <div className="funnel">
               {snap.stages.map((s) => (
@@ -320,7 +397,7 @@ export default function App() {
                   <div className="funnel-label">
                     {s.label}
                     <span className="unit">
-                      {s.unit} · {s.stage_id}
+                      {s.description}
                     </span>
                   </div>
                   <div className="bar-track">
@@ -381,9 +458,9 @@ export default function App() {
                                 }}
                                 title="Filter candidates with this code"
                               >
-                                {r.code}
+                                {friendlyReason(r.code, r.label)}
                               </button>{" "}
-                              {r.label}
+                              <span className="reason-code">({r.code})</span>
                             </span>
                             <strong style={{ textAlign: "right" }}>{r.count}</strong>
                           </div>
@@ -558,6 +635,19 @@ export default function App() {
               </select>
             </div>
             <div className="field">
+              <label>Data readiness</label>
+              <select
+                value={dataFilter}
+                onChange={(e) => setDataFilter(e.target.value)}
+              >
+                <option value="">All</option>
+                <option value="high">high</option>
+                <option value="medium">medium</option>
+                <option value="low">low</option>
+                <option value="unknown">unknown</option>
+              </select>
+            </div>
+            <div className="field">
               <label>Drop code</label>
               <select
                 value={dropFilter}
@@ -578,6 +668,7 @@ export default function App() {
                 setBatchFilter("");
                 setCellFilter("");
                 setViaFilter("");
+                setDataFilter("");
                 setDropFilter("");
               }}
             >
@@ -610,7 +701,7 @@ export default function App() {
                         ? "selected"
                         : ""
                     }
-                    onClick={() => setSelectedCand(c)}
+                    onClick={() => void inspectCandidateData(c)}
                     style={{ cursor: "pointer" }}
                   >
                     <td className="mono">{c.candidate_id}</td>
@@ -665,6 +756,51 @@ export default function App() {
               {selectedCand.issues?.length ? (
                 <pre>{selectedCand.issues.map((i) => `• ${i}`).join("\n")}</pre>
               ) : null}
+              <div className="data-inspector">
+                <h3>Data for this idea</h3>
+                {limelightProjectId ? (
+                  <p className="external-data-link">
+                    The paper points to a Limelight project. {" "}
+                    <a
+                      href={`https://limelight.yeastrc.org/limelight/d/pg/project/${limelightProjectId}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open Limelight Project {limelightProjectId} ↗
+                    </a>
+                  </p>
+                ) : null}
+                {candidateDataLoading ? <p className="muted">Loading fetched files…</p> : null}
+                {!candidateDataLoading && candidateData?.reports.length === 0 ? (
+                  <p className="muted">
+                    No fetched files yet. Run the accession fetch stage for this candidate.
+                  </p>
+                ) : null}
+                {candidateData?.reports.map((report) => (
+                  <div className="data-report" key={report.accession}>
+                    <div className="data-report-head">
+                      <strong>{report.accession}</strong>
+                      <span className={report.validation.ready_for_task_bundle ? "badge high" : "badge medium"}>
+                        {report.validation.ready_for_task_bundle ? "looks ready" : "needs checking"}
+                      </span>
+                    </div>
+                    <p className="muted">
+                      {report.validation.manifest_counts?.processed ?? 0} processed files · {report.validation.manifest_counts?.raw ?? 0} raw files
+                    </p>
+                    {(report.downloads || []).map((file) => (
+                      <details className="data-file" key={file.file_name}>
+                        <summary>
+                          {file.file_name} <span className="muted">({file.status || "not downloaded"})</span>
+                        </summary>
+                        {file.preview ? <pre>{file.preview}</pre> : <p className="muted">No browser preview available.</p>}
+                      </details>
+                    ))}
+                    {report.validation.warnings?.map((warning) => (
+                      <p className="warning-text" key={warning}>⚠ {warning}</p>
+                    ))}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </section>

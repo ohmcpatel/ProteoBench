@@ -99,6 +99,23 @@ python stage4_assemble.py --stubs --review-snapshot
 # → review_app/backend/data/candidates.jsonl
 ```
 
+### 5. Fetch and validate public data
+
+Candidate accessions are not downloaded by the paper stages. Resolve them through
+the repository APIs and select task inputs with:
+
+```bash
+python stage5_fetch_data.py --candidate C01-E01-A_pmid39248652_v1 --download
+```
+
+The stage currently supports PRIDE/ProteomeXchange `PXD...` accessions. It saves
+the manifest and a validation report under `out/data/`, downloads non-raw
+processed/supporting files when `--download` is supplied, and skips files larger
+than `data_fetch.max_download_bytes`. Raw vendor files are intentionally not
+selected by default. A candidate is not ready for a final eval until the report
+shows the required run metadata/QC inputs and a compact task bundle has been
+staged as a Latch `data_node`.
+
 ## Review app
 
 ```bash

@@ -29,6 +29,7 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
         "dataset_dir": "out/dataset",
         "costs_dir": "out/costs",
         "observability_dir": "out/observability",
+        "data_dir": "out/data",
     }.items():
         p = Path(paths.get(key, default))
         if not p.is_absolute():
