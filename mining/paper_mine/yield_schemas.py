@@ -229,6 +229,18 @@ class CandidateYieldRow(BaseModel):
     public_data_accessions: list[str] = Field(default_factory=list)
     bounded_question: str = ""
     archetype_title: str = ""
+    quality_gates: dict[str, str] = Field(default_factory=dict)
+
+
+class QualityGateCount(BaseModel):
+    gate_id: str
+    label: str
+    description: str
+    entered: int = 0
+    passed: int = 0
+    failed: int = 0
+    pending: int = 0
+    conversion_from_candidates: float | None = None
 
 
 class CostSummary(BaseModel):
@@ -251,6 +263,7 @@ class YieldSnapshot(BaseModel):
     stages: list[StageCount] = Field(default_factory=list)
     cells: list[CellYield] = Field(default_factory=list)
     candidates: list[CandidateYieldRow] = Field(default_factory=list)
+    quality_gates: list[QualityGateCount] = Field(default_factory=list)
     issue_buckets: list[IssueBucket] = Field(default_factory=list)
     cost: CostSummary = Field(default_factory=CostSummary)
 

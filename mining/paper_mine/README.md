@@ -18,6 +18,8 @@ paper_mine/
   stage3_extract.py     # 3. Claude SDK extraction
   stage3_extract_cli.py # 3b. Claude CLI extraction (alternate)
   stage4_assemble.py    # 4. dataset + review snapshot (+ yield snapshot)
+  stage5_fetch_data.py  # 5. accession manifests + processed data fetch
+  stage6_quality_gates.py # 6. auditable scientific quality gates
   compute_yield.py      # funnel / drop-reason observability snapshot
   yield_schemas.py      # StageId, DropReasonCode, YieldSnapshot contracts
   release.py            # freeze mining + data-cube versions (HF / GitHub)
@@ -115,6 +117,25 @@ than `data_fetch.max_download_bytes`. Raw vendor files are intentionally not
 selected by default. A candidate is not ready for a final eval until the report
 shows the required run metadata/QC inputs and a compact task bundle has been
 staged as a Latch `data_node`.
+
+### 6. Scientific quality gates
+
+The yield dashboard separates metadata-level candidate survival from true
+evaluation quality. Initialize an auditable gate record with:
+
+```bash
+python stage6_quality_gates.py --candidate C01-E01-A_pmid39248652_v1 --init
+python stage6_quality_gates.py --candidate C01-E01-A_pmid39248652_v1 \
+  --set bundle_verified=pass \
+  --set estimand_identifiable=pass
+```
+
+The sequential gates are: verified source files, verified task bundle,
+identifiable estimand, reproduced reference implementation, passed
+ablations/sensitivity, independent replication, and frozen evaluation. Records
+live in `out/dataset/quality_gates/`. An accession alone is not a pass: source
+verification requires a non-empty fetched manifest, processed files, and at
+least one downloaded or cached file.
 
 ## Review app
 

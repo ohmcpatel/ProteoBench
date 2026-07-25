@@ -62,6 +62,7 @@ export type CandidateYieldRow = {
   public_data_accessions: string[];
   bounded_question: string;
   archetype_title: string;
+  quality_gates?: Record<string, string>;
 };
 
 export type IssueBucket = {
@@ -88,10 +89,22 @@ export type YieldSnapshot = {
   stages: StageCount[];
   cells: CellYield[];
   candidates: CandidateYieldRow[];
+  quality_gates: QualityGateCount[];
   issue_buckets: IssueBucket[];
   cost: CostSummary;
   kpis: Record<string, number | string>;
   notes: string[];
+};
+
+export type QualityGateCount = {
+  gate_id: string;
+  label: string;
+  description: string;
+  entered: number;
+  passed: number;
+  failed: number;
+  pending: number;
+  conversion_from_candidates: number | null;
 };
 
 export type DropoffEdge = {
@@ -127,4 +140,10 @@ export type CandidateDataReport = {
 export type CandidateDataResponse = {
   candidate_id: string;
   reports: CandidateDataReport[];
+  bundle?: {
+    task_markdown?: string | null;
+    output_schema?: Record<string, unknown> | null;
+    reference_answer?: Record<string, unknown> | null;
+    manifest?: { candidate_id?: string; tier?: string; files?: Record<string, { bytes?: number; sha256?: string }> } | null;
+  } | null;
 };

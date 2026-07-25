@@ -97,6 +97,7 @@ export default function App() {
   const [dropFilter, setDropFilter] = useState("");
   const [viaFilter, setViaFilter] = useState("");
   const [dataFilter, setDataFilter] = useState("");
+  const [qualityFilter, setQualityFilter] = useState("");
   const [selectedCand, setSelectedCand] = useState<CandidateYieldRow | null>(
     null
   );
@@ -191,10 +192,11 @@ export default function App() {
       if (cellFilter && c.cube_cell_id !== cellFilter) return false;
       if (viaFilter && (c.viability || "").toLowerCase() !== viaFilter) return false;
       if (dataFilter && (c.data_feasibility || "").toLowerCase() !== dataFilter) return false;
+      if (qualityFilter === "frozen" && c.quality_gates?.frozen_eval !== "pass") return false;
       if (dropFilter && !c.drop_codes.includes(dropFilter)) return false;
       return true;
     });
-  }, [snap, batchFilter, cellFilter, viaFilter, dataFilter, dropFilter]);
+  }, [snap, batchFilter, cellFilter, viaFilter, dataFilter, qualityFilter, dropFilter]);
 
   const allDropCodes = useMemo(() => {
     if (!snap) return [] as string[];
@@ -290,12 +292,12 @@ export default function App() {
         <div>
           <div className="eyebrow">Bottom line</div>
           <h1>
-            {k.review_keep ?? "—"} task{Number(k.review_keep) === 1 ? "" : "s"} kept
+            {k.frozen_evals ?? 0} frozen evaluation{Number(k.frozen_evals) === 1 ? "" : "s"}
             from {k.candidates ?? "—"} candidates
           </h1>
           <p>
             {biggestDrop
-              ? `The biggest loss is between ${biggestDrop.from_label.toLowerCase()} and ${biggestDrop.to_label.toLowerCase()}: ${biggestDrop.dropped} items drop out.`
+              ? `The largest general pipeline loss is between ${biggestDrop.from_label.toLowerCase()} and ${biggestDrop.to_label.toLowerCase()}: ${biggestDrop.dropped} items drop out. Quality yield is shown below.`
               : "The dashboard is still loading the main bottleneck."}
           </p>
         </div>
@@ -303,6 +305,38 @@ export default function App() {
           <span>Primary reason</span>
           <strong>{friendlyReason(biggestReason?.code || "", biggestReason?.label)}</strong>
           {biggestReason && <small>{biggestReason.count} candidates</small>}
+        </div>
+      </section>
+
+      <section className="quality-card">
+        <div className="quality-heading">
+          <div>
+            <div className="eyebrow">Scientific quality yield</div>
+            <h2>What has actually been proven?</h2>
+          </div>
+          <span className="muted">An accession or draft stub is not a finished evaluation.</span>
+          {Number(k.frozen_evals || 0) > 0 ? (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                setTab("candidates");
+                setQualityFilter("frozen");
+              }}
+            >
+              Show frozen example
+            </button>
+          ) : null}
+        </div>
+        <div className="quality-gates">
+          {(snap?.quality_gates || []).map((gate) => (
+            <div className={`quality-gate ${gate.passed ? "passed" : gate.failed ? "failed" : "pending"}`} key={gate.gate_id}>
+              <div className="gate-count">{gate.passed}/{gate.entered}</div>
+              <strong>{gate.label}</strong>
+              <span>{gate.failed ? `${gate.failed} failed` : gate.pending ? `${gate.pending} pending` : "Complete"}</span>
+              <small>{gate.description}</small>
+            </div>
+          ))}
         </div>
       </section>
 
@@ -343,9 +377,9 @@ export default function App() {
           <div className="hint">{String(k.pct_high_of_candidates ?? "—")}% of cands</div>
         </div>
         <div className="kpi ok">
-          <div className="label">Ready to keep</div>
+          <div className="label">Expert keeps</div>
           <div className="value">{k.review_keep ?? "—"}</div>
-          <div className="hint">stubs {k.eval_stubs ?? "—"}</div>
+          <div className="hint">draft stubs {k.eval_stubs ?? "—"}</div>
         </div>
         <div className="kpi">
           <div className="label">Ideas with a data link</div>
@@ -648,6 +682,13 @@ export default function App() {
               </select>
             </div>
             <div className="field">
+              <label>Scientific quality</label>
+              <select value={qualityFilter} onChange={(e) => setQualityFilter(e.target.value)}>
+                <option value="">All</option>
+                <option value="frozen">Frozen evaluations</option>
+              </select>
+            </div>
+            <div className="field">
               <label>Drop code</label>
               <select
                 value={dropFilter}
@@ -669,6 +710,7 @@ export default function App() {
                 setCellFilter("");
                 setViaFilter("");
                 setDataFilter("");
+                setQualityFilter("");
                 setDropFilter("");
               }}
             >
@@ -758,6 +800,33 @@ export default function App() {
               ) : null}
               <div className="data-inspector">
                 <h3>Data for this idea</h3>
+                {candidateData?.bundle ? (
+                  <div className="bundle-inspector">
+                    <div className="data-report-head">
+                      <strong>Frozen task specification</strong>
+                      <span className="badge high">verified bundle</span>
+                    </div>
+                    <p className="muted">The prompt below is exactly what the agent sees. The schema and reference answer are evaluator-side.</p>
+                    {candidateData.bundle.task_markdown ? (
+                      <details open className="data-file">
+                        <summary>Agent-visible prompt</summary>
+                        <pre>{candidateData.bundle.task_markdown}</pre>
+                      </details>
+                    ) : null}
+                    {candidateData.bundle.output_schema ? (
+                      <details open className="data-file">
+                        <summary>Correct-answer schema</summary>
+                        <pre>{JSON.stringify(candidateData.bundle.output_schema, null, 2)}</pre>
+                      </details>
+                    ) : null}
+                    {candidateData.bundle.reference_answer ? (
+                      <details className="data-file">
+                        <summary>Grader-private reference answer</summary>
+                        <pre>{JSON.stringify(candidateData.bundle.reference_answer, null, 2)}</pre>
+                      </details>
+                    ) : null}
+                  </div>
+                ) : null}
                 {limelightProjectId ? (
                   <p className="external-data-link">
                     The paper points to a Limelight project. {" "}
