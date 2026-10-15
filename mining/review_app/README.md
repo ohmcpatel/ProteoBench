@@ -29,7 +29,7 @@ paper_mine/.venv/bin/python -m uvicorn review_app.backend.app:app --reload --por
 
 # UI (separate terminal)
 cd mining/review_app/frontend
-npm install
+npm ci
 npm run dev
 ```
 

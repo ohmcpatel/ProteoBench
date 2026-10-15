@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass
-from datetime import datetime
+import sys
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 import pandas as pd
@@ -79,15 +79,16 @@ class ResultTableRow:
 
 @dataclass
 class TrialData:
-    passed: bool
+    passed: bool | None
     steps: int
     duration_s: float
     execution_s: float
     cost: float
 
 
-def _safe_bool(value) -> bool:
-    return bool(value) if value is not None else False
+def _safe_bool(value) -> bool | None:
+    """Only explicit boolean grades are eligible for accuracy aggregation."""
+    return value if isinstance(value, bool) else None
 
 
 def get_generic_trial_data(trial_dir: Path) -> TrialData:
@@ -208,11 +209,21 @@ def build_results_table(
                 continue
 
             trial_data = get_trial_data(harness, trial_dir)
+            if trial_data.passed is None:
+                print(
+                    f"Skipping ungraded trial: {trial_dir} "
+                    "(result.passed must be true or false)",
+                    file=sys.stderr,
+                )
+                continue
+            model_name = (
+                "mock" if provider == model == "mock" else f"{provider}/{model}"
+            )
             rows.append(
                 ResultTableRow(
                     task_file_name=eval_task_file.name,
                     task_id=eval_id,
-                    model_name=model,
+                    model_name=model_name,
                     harness=harness,
                     trial=trial_index,
                     passed=trial_data.passed,
@@ -223,7 +234,12 @@ def build_results_table(
                 )
             )
 
-    df = pd.DataFrame([r.__dict__ for r in rows])
+    # Preserve the schema even before any graded trajectories exist, so all
+    # downstream generators can read the empty CSV and produce empty reports.
+    df = pd.DataFrame(
+        [r.__dict__ for r in rows],
+        columns=[field.name for field in fields(ResultTableRow)],
+    )
     results_file_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(results_file_path, index=False)
     print(f"Wrote {len(rows)} trial rows → {results_file_path}")

@@ -19,8 +19,8 @@ This is **not** the agent benchmark harness. Running agents lives at the repo ro
 ## Quick start
 
 ```bash
-# 1) Mine candidates
-cd paper_mine
+# 1) Mine candidates (start at the repository root)
+cd mining/paper_mine
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # set ANTHROPIC_API_KEY
@@ -36,8 +36,8 @@ export REVIEW_TOKEN=proteobench-review
 # use paper_mine venv (has FastAPI)
 paper_mine/.venv/bin/python -m uvicorn review_app.backend.app:app --reload --port 8000
 
-# other terminal
-cd review_app/frontend && npm install && npm run dev
+# other terminal, starting at the repository root
+cd mining/review_app/frontend && npm ci && npm run dev
 # open http://127.0.0.1:5173
 ```
 
@@ -47,12 +47,14 @@ Details: [paper_mine/README.md](paper_mine/README.md), [review_app/README.md](re
 ## Yield observability
 
 ```bash
-cd paper_mine && python compute_yield.py   # out/observability/yield_snapshot.json
+# From the repository root, after the mining environment is installed:
+cd mining/paper_mine
+.venv/bin/python compute_yield.py   # out/observability/yield_snapshot.json
 
 # dashboard
 cd ..
 export REVIEW_TOKEN=proteobench-review
 paper_mine/.venv/bin/python -m uvicorn observability.backend.app:app --reload --port 8001
-# other terminal
-cd observability/frontend && npm install && npm run dev   # http://127.0.0.1:5174
+# other terminal, starting at the repository root
+cd mining/observability/frontend && npm ci && npm run dev   # http://127.0.0.1:5174
 ```

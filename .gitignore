@@ -32,6 +32,16 @@ htmlcov/
 .vscode/
 *.swp
 
+# Frontend dependencies and build metadata (all apps)
+node_modules/
+*.tsbuildinfo
+
+# Local quickstarts and generated runs; existing published evidence stays tracked
+demo-output/
+local-results/
+trajectories/**
+!trajectories/.gitkeep
+
 # mining/ — runtime only (source under mining/ is tracked)
 mining/paper_mine/.venv/
 mining/paper_mine/.env

@@ -51,9 +51,9 @@ cd mining
 export REVIEW_TOKEN=proteobench-review
 paper_mine/.venv/bin/python -m uvicorn observability.backend.app:app --reload --port 8001
 
-# UI
-cd observability/frontend
-npm install
+# UI (separate terminal, starting at the repository root)
+cd mining/observability/frontend
+npm ci
 npm run dev
 # → http://127.0.0.1:5174
 ```

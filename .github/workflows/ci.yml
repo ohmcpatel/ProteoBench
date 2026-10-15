@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python ${{ matrix.python }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, python: '3.11'}
+          - {os: ubuntu-latest, python: '3.12'}
+          - {os: macos-latest, python: '3.11'}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      - run: uv run --locked pytest -q
+      - run: uv run --locked ruff check proteobench tests scripts/generate_results_table.py scripts/utils.py
+      - name: Run the documented quickstart
+        run: |
+          uv run --locked proteobench demo
+          uv run --locked proteobench validate example_evals/
+          uv run --locked proteobench run example_evals/smoke/smoke_numeric.json --agent mock --cleanup-workspace --output-dir local-results/trajectories
+          uv run --locked bash scripts/reproduce.sh --evals demo-output/evals --trajectories demo-output/trajectories --output-dir demo-output/results
+      - name: Verify the installed wheel outside the checkout
+        run: |
+          uv build
+          uv venv "$RUNNER_TEMP/proteobench-wheel" --python '${{ matrix.python }}'
+          uv pip install --python "$RUNNER_TEMP/proteobench-wheel/bin/python" dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/proteobench-wheel/bin/proteobench" list
+          "$RUNNER_TEMP/proteobench-wheel/bin/proteobench" demo --output-dir wheel-demo
+      - name: Check generated files stay out of source control
+        run: git diff --exit-code
+
+  frontends:
+    name: Build ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: [review_app, observability]
+    defaults:
+      run:
+        working-directory: mining/${{ matrix.app }}/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mining/${{ matrix.app }}/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build

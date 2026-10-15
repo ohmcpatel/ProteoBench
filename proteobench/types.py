@@ -6,12 +6,12 @@ SpatialBench's public API for package consumers.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
-
 # Canonical eval wire format (re-export for convenience)
-from latch_eval_tools.types import Eval, EvalResult as LatchEvalResult
+from latch_eval_tools.types import Eval
+from latch_eval_tools.types import EvalResult as LatchEvalResult
 from latch_eval_tools.types import TestCase as LatchTestCase
 from latch_eval_tools.types import TestResult as LatchTestResult
+from pydantic import BaseModel, Field
 
 
 class EvalResult(BaseModel):
